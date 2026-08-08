@@ -1,0 +1,41 @@
+openapi: 3.0.3
+info: {title: AI-Assisted URL Shortener API, version: 1.0.0}
+servers: [{url: http://localhost:8080}]
+paths:
+  /api/v1/links:
+    post:
+      summary: Create a short link
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url]
+              properties:
+                url: {type: string, maxLength: 2048}
+                customAlias: {type: string, pattern: '^[A-Za-z0-9_-]{4,32}$'}
+                expiresAt: {type: string, format: date-time}
+      responses: {'201': {description: Created}, '400': {description: Invalid input}, '409': {description: Alias collision}, '429': {description: Rate limited}}
+  /api/v1/links/{code}:
+    get:
+      summary: Get link metadata
+      parameters: [{$ref: '#/components/parameters/code'}]
+      responses: {'200': {description: OK}, '404': {description: Not found}}
+    delete:
+      summary: Deactivate a link
+      parameters: [{$ref: '#/components/parameters/code'}]
+      responses: {'204': {description: Deactivated}, '404': {description: Not found}}
+  /api/v1/links/{code}/analytics:
+    get:
+      summary: Get click analytics
+      parameters: [{$ref: '#/components/parameters/code'}]
+      responses: {'200': {description: OK}}
+  /{code}:
+    get:
+      summary: Redirect to original URL and record click
+      parameters: [{$ref: '#/components/parameters/code'}]
+      responses: {'302': {description: Redirect}, '404': {description: Not found}, '410': {description: Inactive or expired}}
+components:
+  parameters:
+    code: {name: code, in: path, required: true, schema: {type: string}}
