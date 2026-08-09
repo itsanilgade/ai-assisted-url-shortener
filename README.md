@@ -16,7 +16,7 @@ A production-style **Java 17 + Spring Boot** URL-shortening service created for 
 - Flyway database migrations
 - Spring Boot Actuator / Micrometer
 - Gradle
-- JUnit 5 + Spring Boot integration tests
+- JUnit 5 + Mockito + Spring Boot integration/repository tests
 - H2 in PostgreSQL compatibility mode for automated tests
 - JaCoCo coverage verification
 - Docker / Docker Compose
@@ -40,7 +40,6 @@ src/main/java/com/schwab/shortener
 │   ├── LinkStatus.java
 │   └── ShortLink.java
 ├── exception
-│   ├── ApiError.java
 │   ├── ApiException.java
 │   └── GlobalExceptionHandler.java
 ├── model
@@ -406,108 +405,237 @@ A subsequent redirect returns `410 Gone`.
 
 In normal application startup, Flyway owns schema creation/migration and Hibernate uses `ddl-auto: validate` to detect mapping/schema mismatches rather than silently modifying production schema.
 
-## Testing
 
-Tests are under matching packages in `src/test/java`:
+## Testing and quality gates
+
+The test suite is deliberately layered so failures are easy to diagnose instead of relying only on one large end-to-end test.
 
 ```text
-controller/LinkControllerIntegrationTest.java
-domain/ShortLinkTest.java
-util/ShortCodeGeneratorTest.java
-util/UrlPolicyTest.java
+src/test/java/com/schwab/shortener
+├── config
+│   ├── RateLimitInterceptorTest.java
+│   └── SecurityHeadersFilterTest.java
+├── controller
+│   └── LinkControllerIntegrationTest.java
+├── domain
+│   └── ShortLinkTest.java
+├── exception
+│   └── GlobalExceptionHandlerTest.java
+├── repository
+│   ├── ClickEventRepositoryTest.java
+│   └── ShortLinkRepositoryTest.java
+├── service
+│   └── impl
+│       └── LinkServiceImplTest.java
+└── util
+    ├── ShortCodeGeneratorTest.java
+    └── UrlPolicyTest.java
 ```
 
-`LinkControllerIntegrationTest` exercises the complete application context and covers:
+### What is covered
 
-- create → redirect → analytics → deactivate end-to-end flow;
-- custom-alias collision handling;
-- invalid request handling;
-- generated code behavior;
-- metadata lookup;
-- reserved alias validation;
-- missing-link response.
+| Area | Important scenarios |
+|---|---|
+| Controller / API | create, generated alias, custom alias, duplicate alias, invalid URL, reserved alias, blank URL, malformed JSON, invalid alias length, past expiration, metadata lookup, missing code, redirect, analytics, deactivate, idempotent deactivate, cache/security headers |
+| Service | custom alias creation, reserved alias, duplicate alias, generated-code collision retry, retry exhaustion, metadata lookup, missing link, active redirect, expiration, race during atomic update, analytics mapping, deactivation, tracking-header truncation |
+| Repository | lookup, existence check, unique-code constraint, atomic click increment, access timestamp, expired/inactive update rejection, recent-click ordering |
+| Domain | active/expired boundary, deactivation |
+| Utility | HTTP/HTTPS acceptance, normalization, unsupported schemes, missing host, blank URL, embedded credentials, short-code format and practical uniqueness |
+| Infrastructure | rate-limit boundary and defensive security headers |
+| End-to-end | create → redirect → analytics → deactivate → redirect rejected |
 
-`ShortLinkTest` verifies expiration-boundary and deactivation domain behavior.
+### Run all tests
 
-Run everything:
+This repository uses Gradle. With Java 17 and Gradle 8.x installed:
 
 ```bash
 gradle clean check
 ```
 
-`check` executes tests and JaCoCo coverage verification. HTML coverage is generated under:
+`check` runs the JUnit suite and the JaCoCo verification rule. The HTML coverage report is generated at:
 
 ```text
 build/reports/jacoco/test/html/index.html
 ```
 
-## GitHub Actions CI flow
+To run only tests:
 
-`.github/workflows/ci.yml` runs for pushes to `main` and pull requests:
-
-```text
-Checkout
-  → Set up Temurin Java 17
-  → Restore Gradle cache
-  → Start PostgreSQL service container
-  → gradle clean check
-  → start app against real PostgreSQL
-  → call /actuator/health
-  → upload JaCoCo report
+```bash
+gradle test
 ```
 
-A green workflow proves compilation, tests, coverage gate, and a real-PostgreSQL startup smoke test passed in CI.
+### GitHub Actions validation
 
-## Configuration
+Every push to `main` and every pull request runs `.github/workflows/ci.yml`:
 
-| Environment variable | Default | Purpose |
-|---|---|---|
-| `DB_URL` | `jdbc:postgresql://localhost:5432/urlshortener` | PostgreSQL JDBC URL |
-| `DB_USER` | `urlshortener` | DB username |
-| `DB_PASSWORD` | `urlshortener` | Local DB password |
-| `BASE_URL` | `http://localhost:8080` | Public short-link base URL |
+1. checks out the repository;
+2. installs Java 17;
+3. installs Gradle 8.14.5;
+4. runs `gradle --no-daemon clean check`;
+5. starts PostgreSQL 18 as a service container;
+6. boots the application against PostgreSQL so Flyway and Hibernate schema validation execute;
+7. waits for `/actuator/health` to report healthy;
+8. uploads the JaCoCo report even when another CI step fails.
 
-Production credentials should come from the target platform's secret manager and must not be committed.
+A green workflow therefore means compilation, automated tests, coverage verification, production database migration/schema validation, and application startup health all succeeded.
 
-## HTTP/error behavior
+## First-time developer setup
 
-- invalid input → `400 Bad Request`;
-- missing code → `404 Not Found`;
-- duplicate custom alias → `409 Conflict`;
-- expired/inactive short URL → `410 Gone`;
-- create-link rate limit exceeded → `429 Too Many Requests`.
+### Option A — easiest: Docker Compose
 
-## Engineering documentation
+Prerequisites: Docker Desktop or Docker Engine with Compose.
 
-- `docs/ARCHITECTURE.md` — architecture, data flow, scaling path, and decisions.
-- `docs/REQUIREMENTS_TRACEABILITY.md` — assignment requirement → repository artifact mapping.
-- `docs/scenarios/GREENFIELD.md` — greenfield decomposition/execution/validation.
-- `docs/scenarios/BROWNFIELD.md` — enhancement/refactor/bug-fix reasoning.
-- `docs/scenarios/AMBIGUOUS.md` — ambiguous requirement resolution and assumptions.
-- `docs/AI_ASSISTED_ENGINEERING.md` — AI task contract, traceability, guardrails, and human sign-off.
-- `docs/ai-trace/DECISION_LOG.md` — generated/edited/rejected decisions and rationale.
-- `docs/TEST_STRATEGY.md` — test approach, quality gates, and failure cases.
-- `docs/RISK_REGISTER.md` — risks, mitigations, and residual risks.
-- `docs/FINAL_ENGINEERING_SUMMARY.md` — final review summary.
+```bash
+git clone https://github.com/<your-user>/ai-assisted-url-shortener.git
+cd ai-assisted-url-shortener
+docker compose up --build
+```
+
+Wait for the application to become healthy, then verify:
+
+```bash
+curl http://localhost:8080/actuator/health
+```
+
+Expected health state:
+
+```json
+{"status":"UP"}
+```
+
+Stop everything with:
+
+```bash
+docker compose down
+```
+
+### Option B — Java/Gradle locally, PostgreSQL in Docker
+
+Prerequisites: Java 17, Gradle 8.x, and Docker.
+
+Start only PostgreSQL:
+
+```bash
+docker compose up -d postgres
+```
+
+Run the service:
+
+```bash
+gradle bootRun
+```
+
+The default local configuration uses:
+
+```text
+DB_URL=jdbc:postgresql://localhost:5432/urlshortener
+DB_USER=urlshortener
+DB_PASSWORD=urlshortener
+BASE_URL=http://localhost:8080
+```
+
+Override them with environment variables when needed.
+
+## Quick API walkthrough
+
+### Create
+
+```bash
+curl -i -X POST http://localhost:8080/api/v1/links \
+  -H 'Content-Type: application/json' \
+  -d '{"url":"https://www.schwab.com","customAlias":"demo1234"}'
+```
+
+### Redirect
+
+```bash
+curl -i http://localhost:8080/demo1234
+```
+
+### Metadata
+
+```bash
+curl http://localhost:8080/api/v1/links/demo1234
+```
+
+### Analytics
+
+```bash
+curl http://localhost:8080/api/v1/links/demo1234/analytics
+```
+
+### Deactivate
+
+```bash
+curl -i -X DELETE http://localhost:8080/api/v1/links/demo1234
+```
+
+A redirect after deactivation returns HTTP `410 Gone`.
+
+## Database lifecycle
+
+Production/local runtime uses PostgreSQL. On startup:
+
+```text
+Spring Boot
+ → DataSource
+ → Flyway
+ → src/main/resources/db/migration/V1__initial_schema.sql
+ → Hibernate ddl-auto=validate
+ → application starts
+```
+
+Flyway owns schema creation and versioning. Hibernate validates the mapped entities against the migrated schema rather than silently changing production tables.
+
+Automated repository/controller tests use H2 in PostgreSQL compatibility mode with `ddl-auto=create-drop` for fast deterministic tests. CI separately starts the real application against PostgreSQL 18, providing a production-configuration migration and startup gate.
 
 ## Important design decisions
 
-### Why service interface + implementation?
+- **Service interface + implementation** — the controller depends on `LinkService`; orchestration resides in `service.impl.LinkServiceImpl`.
+- **Separate request/response models** — external API models do not expose JPA entities.
+- **Atomic redirect counter** — the database increments click count in one update to avoid lost updates from concurrent redirects.
+- **Click-event table** — aggregate count is fast while recent event history remains queryable.
+- **Soft deactivation** — analytics/history are preserved instead of deleting records.
+- **Expiration checked twice** — the entity is checked first for a clear response, and the atomic update also guards state/expiration to handle races.
+- **URL policy** — only HTTP/HTTPS URLs with a host and without embedded credentials are accepted.
+- **SecureRandom codes** — opaque short codes are not predictable sequence IDs.
+- **Prototype rate limiter** — useful for a single instance; a distributed store/gateway limiter is the production scaling path.
+- **No redirect cache in this prototype** — avoids stale deactivation/expiration behavior unless cache invalidation is designed explicitly.
 
-The controller programs to `LinkService`, while transaction and persistence orchestration live in `LinkServiceImpl`. This keeps API concerns separate from business implementation and provides a natural seam for tests or future alternative implementations.
+## Interview-assignment documentation
 
-### Why request/response DTOs instead of returning JPA entities?
+The repository intentionally contains engineering artifacts in addition to code:
 
-The HTTP contract is intentionally decoupled from persistence. Database changes therefore do not automatically leak into the public API, and callers cannot mutate persistence entities through request binding.
+- `docs/ARCHITECTURE.md` — architecture and scaling decisions;
+- `docs/scenarios/GREENFIELD.md` — greenfield decomposition/execution/validation;
+- `docs/scenarios/BROWNFIELD.md` — brownfield enhancement reasoning;
+- `docs/scenarios/AMBIGUOUS.md` — ambiguous-requirement resolution;
+- `docs/AI_ASSISTED_ENGINEERING.md` — controlled AI-assisted execution model;
+- `docs/ai-trace/DECISION_LOG.md` — generated/edited/rejected decision traceability;
+- `docs/REQUIREMENTS_TRACEABILITY.md` — assignment requirement-to-artifact mapping;
+- `docs/TEST_STRATEGY.md` — test layers and quality approach;
+- `docs/RISK_REGISTER.md` — risks, trade-offs, and mitigations;
+- `docs/FINAL_ENGINEERING_SUMMARY.md` — final engineering summary and limitations;
+- `docs/GITHUB_FILE_CHECKLIST.md` — exact repository files to commit and files to exclude.
 
-### Why atomic click updates?
+## Troubleshooting
 
-A traditional load-entity → increment Java field → save flow can lose increments under concurrent redirects. `ShortLinkRepository.recordAccess` performs `access_count = access_count + 1` directly in the database with active/expiration predicates.
+**Port 5432 already used:** stop the existing PostgreSQL process/container or change the host-side Compose port and `DB_URL` together.
 
-### Why no redirect cache in this prototype?
+**Port 8080 already used:** set `SERVER_PORT`/Spring server configuration or stop the conflicting application.
 
-A cache would improve latency but introduces invalidation correctness when a URL expires or is deactivated. The prototype prioritizes correctness and documents a coherent distributed-cache design as a production evolution.
+**Database connection refused:** confirm `docker compose ps` shows PostgreSQL healthy and that `DB_URL`, `DB_USER`, and `DB_PASSWORD` match.
 
-## Deliberate prototype limitations
+**Flyway/Hibernate validation failure:** do not switch to `ddl-auto=update` as a shortcut. Inspect the migration/entity mismatch and add an explicit Flyway migration.
 
-This is an interview-sized production-style prototype rather than a globally distributed URL platform. The rate limiter is per JVM, click-event analytics remain in PostgreSQL, no tenant/authentication model is included, and redirects are not cached. A production scale-out would introduce distributed rate limiting, authentication/authorization, event-stream analytics, caching with explicit invalidation, and operational SLOs.
+**Gradle/Java mismatch:** verify `java -version` reports Java 17 and use Gradle 8.x.
+
+## GitHub repository
+
+Recommended name:
+
+```text
+ai-assisted-url-shortener
+```
+
+Before pushing, review `docs/GITHUB_FILE_CHECKLIST.md`. Do not commit local IDE metadata, Gradle caches, generated build output, logs, secrets, or database data.

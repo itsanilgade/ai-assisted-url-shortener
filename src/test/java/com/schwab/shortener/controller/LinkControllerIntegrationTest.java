@@ -48,4 +48,58 @@ class LinkControllerIntegrationTest {
             .andExpect(status().isBadRequest());
     }
     @Test void missingCodeReturns404() throws Exception {mvc.perform(get("/api/v1/links/noSuchCode")).andExpect(status().isNotFound());}
+    @Test
+    void blankUrlReturnsValidationErrorBody() throws Exception {
+        mvc.perform(post("/api/v1/links").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"url\":\"   \"}"))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.message").value("Validation failed"))
+            .andExpect(jsonPath("$.details", not(empty())));
+    }
+
+    @Test
+    void shortAliasReturnsValidationError() throws Exception {
+        mvc.perform(post("/api/v1/links").contentType(MediaType.APPLICATION_JSON)
+                .content(mapper.writeValueAsString(Map.of("url", "https://example.com", "customAlias", "abc"))))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.message").value("Validation failed"));
+    }
+
+    @Test
+    void pastExpirationReturnsValidationError() throws Exception {
+        mvc.perform(post("/api/v1/links").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"url\":\"https://example.com\",\"expiresAt\":\"2020-01-01T00:00:00Z\"}"))
+            .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void redirectHasNoStoreAndSecurityHeaders() throws Exception {
+        mvc.perform(post("/api/v1/links").contentType(MediaType.APPLICATION_JSON)
+                .content(mapper.writeValueAsString(Map.of("url", "https://example.com", "customAlias", "secure01"))))
+            .andExpect(status().isCreated());
+
+        mvc.perform(get("/secure01"))
+            .andExpect(status().isFound())
+            .andExpect(header().string("Cache-Control", containsString("no-store")))
+            .andExpect(header().string("X-Content-Type-Options", "nosniff"))
+            .andExpect(header().string("Referrer-Policy", "no-referrer"))
+            .andExpect(header().string("Content-Security-Policy", containsString("default-src 'none'")));
+    }
+
+    @Test
+    void deactivateIsIdempotent() throws Exception {
+        mvc.perform(post("/api/v1/links").contentType(MediaType.APPLICATION_JSON)
+                .content(mapper.writeValueAsString(Map.of("url", "https://example.com", "customAlias", "delete01"))))
+            .andExpect(status().isCreated());
+        mvc.perform(delete("/api/v1/links/delete01")).andExpect(status().isNoContent());
+        mvc.perform(delete("/api/v1/links/delete01")).andExpect(status().isNoContent());
+    }
+
+    @Test
+    void malformedJsonReturnsBadRequest() throws Exception {
+        mvc.perform(post("/api/v1/links").contentType(MediaType.APPLICATION_JSON)
+                .content("{not-json"))
+            .andExpect(status().isBadRequest());
+    }
+
 }

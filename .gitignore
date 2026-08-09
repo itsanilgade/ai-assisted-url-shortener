@@ -1,7 +1,12 @@
 build/
 .gradle/
 .idea/
-.vscode/
 *.iml
+.vscode/
+*.log
+*.pid
 .env
+.env.*
 .DS_Store
+Thumbs.db
+postgres-data/

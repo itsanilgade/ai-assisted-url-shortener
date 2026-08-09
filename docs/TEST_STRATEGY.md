@@ -1,43 +1,64 @@
 # Test Strategy
 
+## Purpose
+
+The test strategy validates behavior at the smallest useful layer and keeps one end-to-end Spring MVC path for cross-layer confidence. Tests are part of the engineering quality gate, not an afterthought.
+
 ## Layers
 
-### Unit
+### Unit tests
 
-- URL accepts HTTP/HTTPS.
-- Reject unsupported schemes and embedded credentials.
-- Short-code format and practical uniqueness sample.
+- `LinkServiceImplTest`: business orchestration, collisions, state changes, not-found behavior, expiration, analytics mapping, race handling, and tracking-header truncation.
+- `ShortLinkTest`: domain expiration boundary and deactivation.
+- `UrlPolicyTest`: safe schemes, host validation, credentials rejection, trimming, and URI normalization.
+- `ShortCodeGeneratorTest`: URL-safe code format and practical uniqueness.
+- `RateLimitInterceptorTest`: non-create bypass and 60-per-minute boundary.
+- `SecurityHeadersFilterTest`: required defensive response headers.
+- `GlobalExceptionHandlerTest`: stable error mapping for controlled API exceptions.
 
-### Application integration
+### Repository tests
 
-`LinkControllerIntegrationTest` boots Spring MVC + JPA and exercises:
+- `ShortLinkRepositoryTest`: persistence lookup, unique code constraint, atomic counter/timestamp update, inactive and expired guards.
+- `ClickEventRepositoryTest`: recent-click filtering and descending time order.
 
-- create with custom alias;
-- redirect and `Location` header;
-- analytics increment/event;
-- deactivate;
-- post-deactivation `410`;
-- duplicate alias `409`;
-- invalid input `400`;
-- missing metadata `404`.
+Repository tests use H2 in PostgreSQL compatibility mode for speed. The CI production smoke test separately validates Flyway/Hibernate startup against PostgreSQL 18.
 
-### CI production-config smoke
+### Controller/integration tests
 
-GitHub Actions starts PostgreSQL 18, runs `gradle check`, starts the application with the real PostgreSQL configuration/Flyway migration, and requires `/actuator/health` to return success.
+`LinkControllerIntegrationTest` starts the Spring application context with MockMvc and validates:
+
+- custom and generated code creation;
+- metadata lookup;
+- redirect and Location header;
+- click analytics;
+- deactivation and 410 behavior;
+- duplicate alias conflict;
+- unsafe URL rejection;
+- reserved alias rejection;
+- bean validation for blank URL, alias length, and expiration;
+- malformed JSON rejection;
+- missing resource handling;
+- redirect cache/security headers;
+- idempotent deactivation.
+
+### End-to-end flow
+
+The primary automated flow is:
+
+```text
+create → redirect → analytics → deactivate → redirect rejected
+```
+
+`scripts/smoke-test.sh` provides the same style of black-box check against a running application.
 
 ## Quality gates
 
-- Gradle build/test must pass.
-- JaCoCo line coverage gate is enforced at 50% minimum for this small prototype; coverage is a floor, not a substitute for behavior coverage.
-- PostgreSQL startup/migration smoke must pass.
+`gradle clean check` must pass before merge. It includes JUnit execution and JaCoCo verification. GitHub Actions then starts the service against PostgreSQL 18 and requires `/actuator/health` to succeed.
 
-## Additional production tests recommended
+## Risk-based coverage
 
-- Concurrent redirect load test proving no lost aggregate counts.
-- Generated-code collision injection test.
-- Expiration boundary test with an injected fixed clock.
-- Rate-limit boundary/reset tests.
-- Migration upgrade/rollback rehearsal.
-- Large URL/header fuzzing.
-- Performance SLO tests (p50/p95/p99).
-- Multi-instance deactivation/cache-coherence tests if caching is added.
+Higher emphasis is placed on code allocation, URL validation, redirect state checks, atomic click accounting, alias conflicts, expiration/deactivation, and error behavior because those paths affect correctness, abuse resistance, or data integrity.
+
+## Known limits / production evolution
+
+This prototype does not run full distributed concurrency/load testing or browser tests. A production path would add Testcontainers-backed PostgreSQL integration tests, load/concurrency testing, gateway/distributed rate-limit tests, observability assertions, contract tests for dependent clients, and security scanning in the delivery pipeline.

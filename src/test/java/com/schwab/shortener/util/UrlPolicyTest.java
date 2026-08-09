@@ -26,4 +26,15 @@ class UrlPolicyTest {
     void rejectsEmbeddedCredentials() {
         assertThrows(ApiException.class, () -> policy.normalizeAndValidate("https://user:pass@example.com"));
     }
+    @Test
+    void trimsAndNormalizesPathSegments() {
+        assertEquals("https://example.com/b", policy.normalizeAndValidate("  https://example.com/a/../b  "));
+    }
+
+    @Test
+    void rejectsMissingHostAndBlankInput() {
+        assertThrows(ApiException.class, () -> policy.normalizeAndValidate("https:///missing-host"));
+        assertThrows(ApiException.class, () -> policy.normalizeAndValidate("   "));
+    }
+
 }
